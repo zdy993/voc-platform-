@@ -1,7 +1,25 @@
-streamlit>=1.35.0
-pandas>=2.2.0
-numpy>=1.26.0
-openai>=1.35.0
-plotly>=5.22.0
-wordcloud>=1.9.3
-openpyxl>=3.1.2
+# 🎯 VOC 智能洞察平台
+
+AI驱动的消费者评论智能分析平台，帮助产品团队快速发现用户痛点和机会点。
+
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app-url.streamlit.app)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## ✨ 功能特性
+
+- **📊 数据概览**：KPI卡片、核心指标、数据预览
+- **🎯 战略洞察**：AI生成的深度战略分析报告
+- **📊 维度分析**：归一化的好评/差评维度识别
+- **👤 用户画像**：用户身份分布和特征分析
+- **😊 情绪分析**：细粒度情绪分布（惊喜、满意、失望等）
+- **💭 购买动机**：用户购买驱动因素分析
+- **📍 使用场景**：识别用户使用场景
+- **🎯 机会发现**：量化改进机会，自动排序
+- **📥 一键导出**：导出所有分析数据为Excel
+
+## 🚀 快速开始
+
+### 安装依赖
+
+```bash
+pip install streamlit pandas plotly requests openpyxl
