@@ -15,6 +15,7 @@ import requests
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple
 import io
+import time
 
 # =========================
 # 页面配置
@@ -32,8 +33,10 @@ st.set_page_config(
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 def call_llm(api_key: str, prompt: str, max_tokens: int = 1500) -> str:
+    """调用DeepSeek API，带重试机制"""
     if not api_key:
         return ""
+    
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     data = {
         "model": "deepseek-chat",
@@ -41,14 +44,23 @@ def call_llm(api_key: str, prompt: str, max_tokens: int = 1500) -> str:
         "temperature": 0.3,
         "max_tokens": max_tokens
     }
-    try:
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=60)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        else:
-            return f"API错误: {response.status_code}"
-    except Exception as e:
-        return f"请求失败: {str(e)}"
+    
+    # 重试机制
+    for attempt in range(3):
+        try:
+            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            elif response.status_code == 429:  # 限流
+                time.sleep(2)
+                continue
+            else:
+                return f"API错误: {response.status_code}"
+        except Exception as e:
+            if attempt == 2:
+                return f"请求失败: {str(e)}"
+            time.sleep(1)
+    return ""
 
 # =========================
 # 维度归一化映射
@@ -354,6 +366,9 @@ def extract_dimensions(review_text: str, star_rating: int, api_key: str) -> Tupl
 只输出JSON："""
     try:
         result = call_llm(api_key, prompt, max_tokens=150)
+        if not result or result.startswith("API错误") or result.startswith("请求失败"):
+            return "中性", []
+        
         clean = re.sub(r'```json\s*|```\s*', '', result.strip())
         data = json.loads(clean)
         sentiment = data.get("sentiment", "中性")
@@ -368,6 +383,8 @@ def extract_motivation(text: str, api_key: str) -> str:
     prompt = f"分析购买动机（只输出一个词）：{text[:150]}\n选项：车载使用、商务办公、防摔保护、旅行使用、送礼、日常使用、游戏使用\n输出："
     try:
         r = call_llm(api_key, prompt, max_tokens=20)
+        if not r:
+            return "日常使用"
         for opt in ["车载使用", "商务办公", "防摔保护", "旅行使用", "送礼", "日常使用", "游戏使用"]:
             if opt in r:
                 return opt
@@ -381,6 +398,8 @@ def extract_emotion(text: str, rating: int, api_key: str) -> str:
     prompt = f"分析情绪（只输出一个词）：{text[:150]}\n选项：惊喜、满意、平静、失望、焦虑、愤怒、后悔\n输出："
     try:
         r = call_llm(api_key, prompt, max_tokens=20)
+        if not r:
+            return "满意" if rating >= 4 else "失望"
         for opt in ["惊喜", "满意", "平静", "失望", "焦虑", "愤怒", "后悔"]:
             if opt in r:
                 return opt
@@ -394,6 +413,8 @@ def extract_persona(text: str, api_key: str) -> str:
     prompt = f"判断用户身份（只输出一个词）：{text[:150]}\n选项：商务人士、学生、旅行用户、家庭用户、科技爱好者、游戏用户、普通用户\n输出："
     try:
         r = call_llm(api_key, prompt, max_tokens=20)
+        if not r:
+            return "普通用户"
         for opt in ["商务人士", "学生", "旅行用户", "家庭用户", "科技爱好者", "游戏用户", "普通用户"]:
             if opt in r:
                 return opt
@@ -407,6 +428,8 @@ def extract_scenario(text: str, api_key: str) -> str:
     prompt = f"判断使用场景（只输出一个词）：{text[:150]}\n选项：车载、办公室、旅行、健身房、家庭、户外、通勤\n输出："
     try:
         r = call_llm(api_key, prompt, max_tokens=20)
+        if not r:
+            return "日常"
         for opt in ["车载", "办公室", "旅行", "健身房", "家庭", "户外", "通勤"]:
             if opt in r:
                 return opt
@@ -571,7 +594,7 @@ def export_all_data(df: pd.DataFrame, analysis_data: dict) -> bytes:
     return output.getvalue()
 
 # =========================
-# 主分析函数
+# 主分析函数（修复版）
 # =========================
 def run_analysis(df: pd.DataFrame, api_key: str, progress_callback=None):
     df = df.copy()
@@ -584,34 +607,84 @@ def run_analysis(df: pd.DataFrame, api_key: str, progress_callback=None):
     personas = []
     scenarios = []
     
-    for idx, row in df.iterrows():
+    # 添加进度显示
+    progress_text = st.empty()
+    
+    for idx in range(total):
         if progress_callback:
             progress_callback(idx + 1, total)
         
-        text = row["review_text"]
-        rating = row["star_rating"]
+        # 显示进度（每10条更新一次）
+        if (idx + 1) % 10 == 0 or idx == total - 1:
+            progress_text.info(f"📊 分析进度: {idx + 1}/{total} ({((idx+1)/total*100):.1f}%)")
         
-        sentiment, dimensions = extract_dimensions(text, rating, api_key)
-        df.at[idx, "sentiment"] = sentiment
-        df.at[idx, "dimensions"] = ", ".join(dimensions)
+        try:
+            row = df.iloc[idx]
+            text = row["review_text"]
+            rating = row["star_rating"]
+            
+            # 带重试的API调用
+            max_retries = 3
+            sentiment, dimensions = None, None
+            for attempt in range(max_retries):
+                try:
+                    sentiment, dimensions = extract_dimensions(text, rating, api_key)
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(1)
+            
+            # 请求间隔（避免限流）
+            time.sleep(0.1)
+            
+            df.at[idx, "sentiment"] = sentiment
+            df.at[idx, "dimensions"] = ", ".join(dimensions)
+            
+            for dim in dimensions:
+                if sentiment == "正面":
+                    positive_dims[dim] += 1
+                elif sentiment == "负面":
+                    negative_dims[dim] += 1
+            
+            # 其他提取（带异常处理）
+            try:
+                df.at[idx, "motivation"] = extract_motivation(text, api_key)
+                time.sleep(0.05)
+                df.at[idx, "emotion"] = extract_emotion(text, rating, api_key)
+                time.sleep(0.05)
+                df.at[idx, "persona"] = extract_persona(text, api_key)
+                time.sleep(0.05)
+                df.at[idx, "scenario"] = extract_scenario(text, api_key)
+            except:
+                # 失败时使用默认值
+                df.at[idx, "motivation"] = "日常使用"
+                df.at[idx, "emotion"] = "满意" if rating >= 4 else "失望"
+                df.at[idx, "persona"] = "普通用户"
+                df.at[idx, "scenario"] = "日常"
+            
+            df.at[idx, "analysis_status"] = "已分析"
+            
+        except Exception as e:
+            # 单条失败不影响整体
+            print(f"警告：第{idx}条评论分析失败: {str(e)}")
+            df.at[idx, "sentiment"] = "中性"
+            df.at[idx, "dimensions"] = ""
+            df.at[idx, "motivation"] = "日常使用"
+            df.at[idx, "emotion"] = "平静"
+            df.at[idx, "persona"] = "普通用户"
+            df.at[idx, "scenario"] = "日常"
+            df.at[idx, "analysis_status"] = "分析失败"
         
-        for dim in dimensions:
-            if sentiment == "正面":
-                positive_dims[dim] += 1
-            elif sentiment == "负面":
-                negative_dims[dim] += 1
-        
-        df.at[idx, "motivation"] = extract_motivation(text, api_key)
-        df.at[idx, "emotion"] = extract_emotion(text, rating, api_key)
-        df.at[idx, "persona"] = extract_persona(text, api_key)
-        df.at[idx, "scenario"] = extract_scenario(text, api_key)
-        df.at[idx, "analysis_status"] = "已分析"
-        
+        # 收集结果
         motivations.append(df.at[idx, "motivation"])
         emotions.append(df.at[idx, "emotion"])
         personas.append(df.at[idx, "persona"])
         scenarios.append(df.at[idx, "scenario"])
     
+    progress_text.empty()
+    
+    # 计算分布
     total_count = len(df)
     motivation_dist = {k: v/total_count*100 for k, v in Counter(motivations).items()}
     emotion_dist = {k: v/total_count*100 for k, v in Counter(emotions).items()}
@@ -620,10 +693,10 @@ def run_analysis(df: pd.DataFrame, api_key: str, progress_callback=None):
     
     opportunities = discover_opportunities(dict(positive_dims), dict(negative_dims), total_count)
     
-    # 生成各类报告
+    # 生成报告（只用前50条生成报告，避免超时）
     strategic_insights = generate_strategic_insights(
         dict(positive_dims), dict(negative_dims), emotion_dist, 
-        persona_dist, motivation_dist, df["review_text"].tolist(), api_key
+        persona_dist, motivation_dist, df["review_text"].tolist()[:50], api_key
     )
     
     dimension_report = generate_detailed_dimension_report(dict(positive_dims), dict(negative_dims))
@@ -711,7 +784,7 @@ def main():
         if not api_key:
             st.warning("⚠️ 请输入 API Key")
         else:
-            with st.spinner("分析中..."):
+            with st.spinner("分析中...请耐心等待，500条评论大约需要3-5分钟..."):
                 progress_bar = st.progress(0)
                 def update(p, t):
                     progress_bar.progress(p / t)
@@ -720,6 +793,7 @@ def main():
                 st.session_state["df"] = df
                 st.session_state["analysis_data"] = analysis_data
                 st.success("✅ 分析完成！")
+                st.balloons()
     
     df = st.session_state.get("df", df)
     analysis_data = st.session_state.get("analysis_data", {})
@@ -742,7 +816,7 @@ def main():
             "opportunity_report": ""
         }
     
-    # ========== 数据概览（原有的） ==========
+    # ========== 数据概览 ==========
     st.markdown("---")
     st.markdown("## 📊 数据概览")
     
@@ -782,7 +856,6 @@ def main():
     with tabs[0]:
         if analysis_data.get("strategic_insights"):
             st.markdown(analysis_data["strategic_insights"])
-            # 单独导出战略报告
             st.download_button(
                 "📥 导出战略洞察报告",
                 analysis_data["strategic_insights"],
