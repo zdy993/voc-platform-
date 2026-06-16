@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VOC 智能分析平台 - 完整版
+VOC 智能分析平台 - 完整版（修复 + 维度自主学习）
 包含：数据概览、战略洞察、维度分析、购买动机、情绪分析、用户画像、使用场景、机会发现、一键导出
 """
 
@@ -145,7 +145,6 @@ def batch_extract_all(reviews: List[str], ratings: List[int], api_key: str) -> L
 
 def extract_single_attributes(text: str, rating: int, api_key: str) -> Dict:
     """单条提取（降级方案）"""
-    # 使用原有的各个函数，但为了避免重复调用，我们这里调用一个合并的prompt
     prompt = f"""分析评论：{text[:200]} (星级:{rating}/5)
 请输出JSON格式：{{"sentiment":"正面/负面/中性","dimensions":["维度1","维度2"],"motivation":"购买动机","emotion":"情绪","persona":"用户身份","scenario":"使用场景"}}
 只输出JSON："""
@@ -187,7 +186,7 @@ def record_new_dimensions(dimensions: List[str]):
         st.session_state.new_dimensions.update(new_dims)
 
 # =========================
-# 战略洞察报告生成（保持不变）
+# 战略洞察报告生成
 # =========================
 def generate_strategic_insights(
     positive_dims: dict, 
@@ -198,8 +197,6 @@ def generate_strategic_insights(
     sample_reviews: List[str],
     api_key: str
 ) -> str:
-    # 与原代码相同，省略（保持完整）
-    # ... 原函数代码 ...
     pos_total = sum(positive_dims.values()) if positive_dims else 1
     neg_total = sum(negative_dims.values()) if negative_dims else 1
     
@@ -292,11 +289,9 @@ def generate_strategic_insights(
     except:
         pass
     
-    # fallback report（与原代码相同）
     return generate_fallback_report(positive_dims, negative_dims, emotion_dist, persona_dist, motivation_dist)
 
 def generate_fallback_report(positive_dims, negative_dims, emotion_dist, persona_dist, motivation_dist):
-    # 与原代码相同，省略
     pos_total = sum(positive_dims.values()) if positive_dims else 1
     neg_total = sum(negative_dims.values()) if negative_dims else 1
     top_pos = list(positive_dims.items())[:3] if positive_dims else []
@@ -341,10 +336,9 @@ def generate_fallback_report(positive_dims, negative_dims, emotion_dist, persona
     return report
 
 # =========================
-# 详细报告生成（按模块，与原代码相同）
+# 详细报告生成（各模块）
 # =========================
 def generate_detailed_dimension_report(positive_dims: dict, negative_dims: dict) -> str:
-    # 与原代码相同
     pos_total = sum(positive_dims.values()) if positive_dims else 1
     neg_total = sum(negative_dims.values()) if negative_dims else 1
     
@@ -370,7 +364,6 @@ def generate_detailed_dimension_report(positive_dims: dict, negative_dims: dict)
     return report
 
 def generate_detailed_persona_report(persona_dist: dict, total: int) -> str:
-    # 与原代码相同
     report = f"""# 👤 用户画像详细报告
 
 ## 用户画像分布
@@ -392,7 +385,6 @@ def generate_detailed_persona_report(persona_dist: dict, total: int) -> str:
     return report
 
 def generate_detailed_emotion_report(emotion_dist: dict) -> str:
-    # 与原代码相同
     report = f"""# 😊 情绪分析详细报告
 
 ## 情绪分布
@@ -415,7 +407,6 @@ def generate_detailed_emotion_report(emotion_dist: dict) -> str:
     return report
 
 def generate_detailed_motivation_report(motivation_dist: dict) -> str:
-    # 与原代码相同
     report = f"""# 💭 购买动机详细报告
 
 ## 购买动机分布
@@ -429,7 +420,6 @@ def generate_detailed_motivation_report(motivation_dist: dict) -> str:
     return report
 
 def generate_detailed_opportunity_report(opportunities: list) -> str:
-    # 与原代码相同
     report = f"""# 🎯 机会发现详细报告
 
 ## 机会点排行榜
@@ -458,7 +448,7 @@ def generate_detailed_opportunity_report(opportunities: list) -> str:
     return report
 
 # =========================
-# 图表函数（与原代码相同）
+# 图表函数
 # =========================
 def make_bar_chart(data: dict, title: str, color: str):
     if not data:
@@ -497,7 +487,7 @@ def make_emotion_chart(emotion_dist: dict):
     return fig
 
 # =========================
-# 数据预处理（与原代码相同）
+# 数据预处理
 # =========================
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -538,7 +528,7 @@ def get_sample_data():
     })
 
 # =========================
-# 导出所有数据（与原代码相同）
+# 导出所有数据
 # =========================
 def export_all_data(df: pd.DataFrame, analysis_data: dict) -> bytes:
     output = io.BytesIO()
@@ -580,7 +570,7 @@ def export_all_data(df: pd.DataFrame, analysis_data: dict) -> bytes:
     return output.getvalue()
 
 # =========================
-# 机会发现（与原代码相同）
+# 机会发现
 # =========================
 def discover_opportunities(positive_dims: dict, negative_dims: dict, total: int) -> List[dict]:
     opportunities = []
@@ -702,7 +692,7 @@ def run_analysis(df: pd.DataFrame, api_key: str, progress_callback=None):
     return df, analysis_data
 
 # =========================
-# 侧边栏（增加维度管理入口）
+# 侧边栏
 # =========================
 def render_sidebar():
     with st.sidebar:
@@ -727,16 +717,16 @@ def render_sidebar():
         return api_key, None, start_analysis
 
 # =========================
-# 维度管理UI（在维度分析Tab中展示）
+# 维度管理UI（修复合并bug + 智能合并增强）
 # =========================
 def render_dimension_management():
     st.markdown("### 🧠 维度自主学习与管理")
     st.caption("管理维度映射，将新维度纳入分析体系。")
-    
+
     # 获取当前映射和新维度
     mapping = st.session_state.get("dimension_mapping", DEFAULT_DIMENSION_MAPPING)
     new_dims = st.session_state.get("new_dimensions", set())
-    
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**现有维度映射**")
@@ -749,43 +739,60 @@ def render_dimension_management():
                 st.write(f"- {dim}")
             # 提供操作按钮
             if st.button("✨ 智能合并新维度（使用LLM）"):
-                if new_dims:
-                    # 调用LLM将新维度合并到现有维度或创建新维度
-                    prompt = f"""现有维度体系：{list(mapping.keys())}
+                api_key = st.session_state.get("api_key", "")
+                if not api_key:
+                    st.error("❌ 请先在左侧输入有效的 API Key 才能使用智能合并")
+                elif not new_dims:
+                    st.info("当前没有待学习的新维度")
+                else:
+                    with st.spinner("AI 正在分析新维度归属..."):
+                        prompt = f"""现有维度体系：{list(mapping.keys())}
 新出现的维度：{list(new_dims)}
 请将新维度智能归类到现有维度中，如果无法归类则建议创建新维度。
 输出JSON格式：{{"merge": {{"新维度1": "现有维度A", "新维度2": "现有维度B"}}, "create": ["新维度X", "新维度Y"]}}
 只输出JSON。"""
-                    result = call_llm(st.session_state.get("api_key", ""), prompt, max_tokens=500)
-                    try:
-                        clean = re.sub(r'```json\s*|```\s*', '', result.strip())
-                        data = json.loads(clean)
-                        merge_map = data.get("merge", {})
-                        create_list = data.get("create", [])
-                        # 更新映射
-                        for new_dim, target in merge_map.items():
-                            if target in mapping:
-                                # 将新维度作为同义词加入目标维度
-                                mapping[target].append(new_dim)
-                            else:
-                                # 目标不存在，创建新维度
-                                mapping[new_dim] = [new_dim]
-                        for new_dim in create_list:
-                            if new_dim not in mapping:
-                                mapping[new_dim] = [new_dim]
-                        # 更新session_state
-                        st.session_state.dimension_mapping = mapping
-                        st.session_state.new_dimensions = set()
-                        st.success("智能合并完成！")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"智能合并失败：{e}")
+                        result = call_llm(api_key, prompt, max_tokens=500)
+                        if result.startswith("API错误") or result.startswith("请求失败"):
+                            st.error(f"智能合并 API 调用失败：{result}")
+                        else:
+                            try:
+                                clean = re.sub(r'```json\s*|```\s*', '', result.strip())
+                                data = json.loads(clean)
+                                merge_map = data.get("merge", {})
+                                create_list = data.get("create", [])
+                                
+                                # 处理合并
+                                for new_dim, target in merge_map.items():
+                                    if target in mapping:
+                                        if new_dim not in mapping[target]:
+                                            mapping[target].append(new_dim)
+                                    else:
+                                        # 目标不存在则创建
+                                        mapping[new_dim] = [new_dim]
+                                    # 从新维度池中移除
+                                    if new_dim in st.session_state.new_dimensions:
+                                        st.session_state.new_dimensions.remove(new_dim)
+                                
+                                # 处理新建
+                                for new_dim in create_list:
+                                    if new_dim not in mapping:
+                                        mapping[new_dim] = [new_dim]
+                                    if new_dim in st.session_state.new_dimensions:
+                                        st.session_state.new_dimensions.remove(new_dim)
+                                
+                                st.session_state.dimension_mapping = mapping
+                                st.success("✅ 智能合并完成！")
+                                st.rerun()
+                            except json.JSONDecodeError as e:
+                                st.error(f"❌ AI 返回格式错误，无法解析：{e}\n原始返回：{result[:200]}...")
+                            except Exception as e:
+                                st.error(f"❌ 智能合并处理异常：{e}")
             if st.button("❌ 清空所有新维度记录"):
                 st.session_state.new_dimensions = set()
                 st.rerun()
         else:
             st.info("暂无新维度，所有维度已映射。")
-    
+
     # 手动添加维度
     with st.expander("✏️ 手动管理维度映射"):
         col1, col2 = st.columns(2)
@@ -803,19 +810,39 @@ def render_dimension_management():
                     st.success(f"已添加维度 {new_standard}")
                     st.rerun()
         with col2:
-            st.markdown("**合并维度**（将新维度合并到现有维度）")
+            st.markdown("**合并维度**（将现有维度或新词合并到目标）")
+            # 选择目标维度
             target = st.selectbox("选择目标维度", list(mapping.keys()))
-            merge_dim = st.text_input("要合并的维度名称")
+            merge_input = st.text_input("要合并的维度名称（支持标准维度或新词）")
             if st.button("🔗 合并到目标"):
-                if merge_dim and target:
-                    if merge_dim not in mapping[target]:
-                        mapping[target].append(merge_dim)
-                    # 如果合并的维度曾经是新维度，从新维度池中移除
-                    if merge_dim in st.session_state.get("new_dimensions", set()):
-                        st.session_state.new_dimensions.remove(merge_dim)
+                if merge_input and target and merge_input != target:
+                    merge_clean = merge_input.strip()
+                    target_clean = target.strip()
+                    # 1. 如果 merge_clean 是现有的标准维度（键），需要彻底转移并删除旧键
+                    if merge_clean in mapping:
+                        # 将旧维度的所有同义词转移到目标
+                        if merge_clean not in mapping[target_clean]:
+                            mapping[target_clean].extend(mapping[merge_clean])
+                        # 删除被合并的旧维度键
+                        del mapping[merge_clean]
+                    else:
+                        # 2. 否则当作新词/同义词，直接追加
+                        if merge_clean not in mapping[target_clean]:
+                            mapping[target_clean].append(merge_clean)
+                    # 3. 从新维度池中清理（不区分大小写，避免残留）
+                    new_dims_set = st.session_state.get("new_dimensions", set())
+                    to_remove = [d for d in new_dims_set if d.lower() == merge_clean.lower() or d == target_clean]
+                    for d in to_remove:
+                        new_dims_set.discard(d)
+                    st.session_state.new_dimensions = new_dims_set
+                    # 4. 更新映射并刷新
                     st.session_state.dimension_mapping = mapping
-                    st.success(f"已将 {merge_dim} 合并到 {target}")
+                    st.success(f"✅ 已将「{merge_clean}」成功合并到「{target_clean}」")
                     st.rerun()
+                elif merge_input == target:
+                    st.warning("不能将维度合并到自身")
+                else:
+                    st.warning("请输入要合并的维度名称")
         if st.button("🔄 重置为默认映射"):
             st.session_state.dimension_mapping = copy.deepcopy(DEFAULT_DIMENSION_MAPPING)
             st.session_state.new_dimensions = set()
@@ -833,13 +860,13 @@ def main():
         st.session_state.new_dimensions = set()
     if "api_key" not in st.session_state:
         st.session_state.api_key = ""
-    
+
     st.title("🎯 VOC 智能洞察平台")
     st.caption("AI驱动的消费者洞察 | 完整数据概览 + 战略分析报告 | 一键导出所有数据")
-    
+
     api_key, input_df, start_analysis = render_sidebar()
     st.session_state.api_key = api_key  # 保存用于维度管理
-    
+
     if input_df is None:
         st.info("👈 左侧上传文件或点击「加载示例数据」")
         st.markdown("""
@@ -854,14 +881,14 @@ def main():
         - **一键导出**：导出所有分析数据为Excel
         """)
         return
-    
+
     if "review_text" not in input_df.columns:
         st.error("文件缺少 `review_text` 列")
         st.write("当前列名:", input_df.columns.tolist())
         return
-    
+
     df = preprocess_data(input_df)
-    
+
     if start_analysis:
         if not api_key:
             st.warning("⚠️ 请输入 API Key")
@@ -870,15 +897,15 @@ def main():
                 progress_bar = st.progress(0)
                 def update(p, t):
                     progress_bar.progress(p / t)
-                
+
                 df, analysis_data = run_analysis(df, api_key, update)
                 st.session_state["df"] = df
                 st.session_state["analysis_data"] = analysis_data
                 st.success("✅ 分析完成！")
-    
+
     df = st.session_state.get("df", df)
     analysis_data = st.session_state.get("analysis_data", {})
-    
+
     if not analysis_data:
         analysis_data = {
             "total": len(df),
@@ -896,41 +923,41 @@ def main():
             "motivation_report": "",
             "opportunity_report": ""
         }
-    
+
     # ========== 数据概览 ==========
     st.markdown("---")
     st.markdown("## 📊 数据概览")
-    
+
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("总评论数", analysis_data.get("total", 0))
     col2.metric("好评维度", len(analysis_data.get("positive_dims", {})))
     col3.metric("差评维度", len(analysis_data.get("negative_dims", {})))
     col4.metric("用户画像", len(analysis_data.get("persona_dist", {})))
     col5.metric("识别情绪", len(analysis_data.get("emotion_dist", {})))
-    
+
     st.markdown("---")
     st.markdown("### 📈 核心指标")
-    
+
     pos_total = sum(analysis_data.get("positive_dims", {}).values())
     neg_total = sum(analysis_data.get("negative_dims", {}).values())
-    
+
     col1, col2, col3 = st.columns(3)
     col1.metric("好评提及总数", pos_total if pos_total > 0 else "待分析")
     col2.metric("差评提及总数", neg_total if neg_total > 0 else "待分析")
     col3.metric("总提及次数", pos_total + neg_total if (pos_total + neg_total) > 0 else "待分析")
-    
+
     with st.expander("📋 原始数据预览", expanded=False):
         display_cols = ["review_text", "star_rating", "sentiment", "dimensions", "motivation", "emotion", "persona", "scenario", "analysis_status"]
         available = [c for c in display_cols if c in df.columns]
         st.dataframe(df[available], use_container_width=True, height=300)
-    
+
     # ========== 8个Tab ==========
     tabs = st.tabs([
-        "🎯 战略洞察", "📊 维度分析", "💭 购买动机", 
-        "😊 情绪分析", "👤 用户画像", "📍 使用场景", 
+        "🎯 战略洞察", "📊 维度分析", "💭 购买动机",
+        "😊 情绪分析", "👤 用户画像", "📍 使用场景",
         "🎯 机会发现", "📥 一键导出"
     ])
-    
+
     # Tab 1: 战略洞察
     with tabs[0]:
         if analysis_data.get("strategic_insights"):
@@ -943,7 +970,7 @@ def main():
             )
         else:
             st.info("点击「开始分析」生成战略洞察报告")
-    
+
     # Tab 2: 维度分析 + 维度管理
     with tabs[1]:
         st.markdown("### 维度分析（已归一化）")
@@ -955,36 +982,36 @@ def main():
                     st.markdown(analysis_data["dimension_report"])
         with col2:
             st.plotly_chart(make_bar_chart(analysis_data.get("negative_dims", {}), "差评 TOP 维度", "#e74c3c"), use_container_width=True)
-        
-        # 维度管理（新增）
+
+        # 维度管理（新增修复）
         with st.expander("🧠 维度自主学习与管理", expanded=False):
             render_dimension_management()
-    
+
     # Tab 3: 购买动机
     with tabs[2]:
         st.plotly_chart(make_pie_chart(analysis_data.get("motivation_dist", {}), "购买动机分布"), use_container_width=True)
         if analysis_data.get("motivation_report"):
             with st.expander("📄 查看详细动机报告"):
                 st.markdown(analysis_data["motivation_report"])
-    
+
     # Tab 4: 情绪分析
     with tabs[3]:
         st.plotly_chart(make_emotion_chart(analysis_data.get("emotion_dist", {})), use_container_width=True)
         if analysis_data.get("emotion_report"):
             with st.expander("📄 查看详细情绪报告"):
                 st.markdown(analysis_data["emotion_report"])
-    
+
     # Tab 5: 用户画像
     with tabs[4]:
         st.plotly_chart(make_pie_chart(analysis_data.get("persona_dist", {}), "用户画像分布"), use_container_width=True)
         if analysis_data.get("persona_report"):
             with st.expander("📄 查看详细画像报告"):
                 st.markdown(analysis_data["persona_report"])
-    
+
     # Tab 6: 使用场景
     with tabs[5]:
         st.plotly_chart(make_bar_chart(analysis_data.get("scenario_dist", {}), "使用场景分布", "#3498db"), use_container_width=True)
-    
+
     # Tab 7: 机会发现
     with tabs[6]:
         opportunities = analysis_data.get("opportunities", [])
@@ -1004,7 +1031,7 @@ def main():
                     st.markdown(analysis_data["opportunity_report"])
         else:
             st.info("暂无机会点数据")
-    
+
     # Tab 8: 一键导出
     with tabs[7]:
         st.markdown("## 📥 一键导出所有数据")
@@ -1018,7 +1045,7 @@ def main():
         - 情绪分布
         - 机会点
         """)
-        
+
         excel_data = export_all_data(df, analysis_data)
         st.download_button(
             "📥 导出全部数据 (Excel)",
@@ -1027,10 +1054,10 @@ def main():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-        
+
         st.markdown("---")
         st.markdown("### 📄 各模块详细报告导出")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             if analysis_data.get("strategic_insights"):
