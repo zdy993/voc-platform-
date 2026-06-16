@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-VOC 智能分析平台 V2
-架构级重构 | 支持3000条评论 | API成本降低80% | 速度提升10倍
+VOC 智能分析平台 V2 - 完整修复版
+支持3000条评论 | 批量分析 | 断点续传 | 维度学习 | 自动降级
 """
 
 import streamlit as st
@@ -37,7 +37,7 @@ st.set_page_config(
 # =========================
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-def call_llm(api_key: str, prompt: str, max_tokens: int = 2000) -> str:
+def call_llm(api_key: str, prompt: str, max_tokens: int = 1500) -> str:
     """调用API - 带重试和超时控制"""
     if not api_key:
         return ""
@@ -52,16 +52,25 @@ def call_llm(api_key: str, prompt: str, max_tokens: int = 2000) -> str:
     
     for attempt in range(3):
         try:
-            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
+            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=20)
             if response.status_code == 200:
                 return response.json()["choices"][0]["message"]["content"]
             elif response.status_code == 429:
-                time.sleep(3)
+                wait_time = (attempt + 1) * 2
+                time.sleep(wait_time)
                 continue
-        except:
+            else:
+                if attempt == 2:
+                    return ""
+                time.sleep(1)
+        except requests.exceptions.Timeout:
             if attempt == 2:
                 return ""
             time.sleep(2)
+        except:
+            if attempt == 2:
+                return ""
+            time.sleep(1)
     return ""
 
 # =========================
@@ -133,7 +142,10 @@ class DimensionLearner:
         row = cursor.fetchone()
         conn.close()
         if row:
-            return json.loads(row[0])
+            try:
+                return json.loads(row[0])
+            except:
+                return None
         return None
     
     def save_cache(self, text: str, result: dict):
@@ -173,58 +185,66 @@ class DimensionLearner:
         if os.path.exists(self.progress_file):
             os.remove(self.progress_file)
     
+    def clear_cache(self):
+        """清除缓存"""
+        if os.path.exists(self.db_file):
+            os.remove(self.db_file)
+        self._init_db()
+    
     def learn_new_dimensions(self, reviews: List[str], api_key: str) -> dict:
         """从评论中学习新的二级维度"""
-        if not reviews or not api_key:
+        if not reviews or not api_key or len(reviews) < 5:
             return {}
         
-        # 收集已出现的二级维度
+        # 提取可能的维度关键词（简化版）
         all_dimensions = []
-        for review in reviews:
-            # 这里简化处理，实际可以从分析结果中提取
-            pass
+        for review in reviews[:50]:
+            words = review.split()
+            for word in words:
+                if len(word) >= 2 and word not in ['的', '了', '是', '在', '有', '和', '与', '或']:
+                    if word not in LEVEL1_DIMENSIONS:
+                        all_dimensions.append(word)
         
-        # 如果没有新维度，返回空
-        if len(all_dimensions) < 3:
-            return {}
+        # 去重
+        unique_dims = list(set(all_dimensions))
+        if len(unique_dims) < 5:
+            return self.learned_dimensions
         
         # 使用AI进行聚类
-        prompt = f"""分析以下用户提到的产品特性，进行聚类分组。
+        prompt = f"""分析以下用户提到的产品特性关键词，将相似含义的词汇归为一组。
 
-特性列表：
-{chr(10).join(all_dimensions[:30])}
+关键词列表：
+{chr(10).join(unique_dims[:30])}
 
-请将相似特性归为一组，输出JSON格式：
+输出JSON格式：
 {{
     "clusters": [
-        {{"cluster_name": "支架性能", "members": ["支架稳定性", "支架牢固度", "支架支撑力"]}},
-        ...
+        {{"cluster_name": "支架性能", "members": ["稳定性", "牢固度", "支撑力", "松动"]}},
+        {{"cluster_name": "磁吸强度", "members": ["磁力", "吸力", "吸附", "磁吸"]}}
     ]
 }}
 
-只输出JSON："""
+只输出JSON，不要其他内容："""
         
         try:
-            result = call_llm(api_key, prompt, max_tokens=1000)
+            result = call_llm(api_key, prompt, max_tokens=800)
             if result:
                 clean = re.sub(r'```json\s*|```\s*', '', result.strip())
                 data = json.loads(clean)
                 for cluster in data.get("clusters", []):
                     cluster_name = cluster.get("cluster_name")
                     members = cluster.get("members", [])
-                    if cluster_name and members:
+                    if cluster_name and members and len(members) >= 2:
                         if cluster_name not in self.learned_dimensions:
                             self.learned_dimensions[cluster_name] = {
                                 "members": members,
                                 "created_at": datetime.now().isoformat()
                             }
                         else:
-                            # 合并新的成员
                             existing = set(self.learned_dimensions[cluster_name].get("members", []))
                             existing.update(members)
                             self.learned_dimensions[cluster_name]["members"] = list(existing)
                 self._save_learned()
-                return self.learned_dimensions
         except:
             pass
         return self.learned_dimensions
@@ -237,34 +257,105 @@ class DimensionLearner:
         return None
 
 # =========================
-# 分析引擎 V2 - 一次API调用完成所有分析
+# 降级函数 - 当API失败时使用
+# =========================
+def fallback_result(text: str, rating: int) -> dict:
+    """降级结果 - 基于评分和关键词"""
+    # 情感判断
+    if rating >= 4:
+        sentiment = "正面"
+    elif rating <= 2:
+        sentiment = "负面"
+    else:
+        sentiment = "中性"
+    
+    # 一级维度匹配（关键词）
+    level1 = ""
+    text_lower = text.lower()
+    for dim in LEVEL1_DIMENSIONS:
+        if dim in text or any(kw in text_lower for kw in dim):
+            level1 = dim
+            break
+    
+    # 如果是支架相关评论，检测二级维度
+    level2 = ""
+    if "支架" in text or "支撑" in text or "转轴" in text:
+        if "稳定" in text or "牢固" in text or "晃动" in text:
+            level2 = "支架稳定性"
+        elif "横屏" in text or "竖屏" in text:
+            level2 = "横屏体验"
+        elif "角度" in text or "调节" in text:
+            level2 = "支撑角度"
+        elif "顺滑" in text or "开合" in text:
+            level2 = "开合顺滑度"
+    
+    # 动机
+    motivation = "日常使用"
+    if "车载" in text or "开车" in text:
+        motivation = "车载使用"
+    elif "办公" in text or "商务" in text:
+        motivation = "商务办公"
+    elif "摔" in text or "保护" in text:
+        motivation = "防摔保护"
+    elif "旅行" in text:
+        motivation = "旅行使用"
+    
+    # 情绪
+    emotion = "满意" if rating >= 4 else "失望" if rating <= 2 else "平静"
+    
+    # 画像
+    persona = "普通用户"
+    if "商务" in text or "办公" in text:
+        persona = "商务人士"
+    elif "学生" in text:
+        persona = "学生"
+    elif "旅行" in text:
+        persona = "旅行用户"
+    elif "家庭" in text or "孩子" in text:
+        persona = "家庭用户"
+    elif "科技" in text or "数码" in text:
+        persona = "科技爱好者"
+    
+    # 场景
+    scenario = "日常"
+    if "车载" in text or "开车" in text:
+        scenario = "车载"
+    elif "办公" in text or "工位" in text:
+        scenario = "办公室"
+    elif "旅行" in text:
+        scenario = "旅行"
+    elif "健身" in text:
+        scenario = "健身房"
+    
+    return {
+        "sentiment": sentiment,
+        "level1_dimension": level1,
+        "level2_dimension": level2,
+        "motivation": motivation,
+        "emotion": emotion,
+        "persona": persona,
+        "scenario": scenario
+    }
+
+# =========================
+# 分析引擎 - 单条分析
 # =========================
 def extract_all_attributes(review_text: str, star_rating: int, api_key: str, 
                            learner: DimensionLearner, mode: str = "standard") -> dict:
-    """
-    一次API调用完成所有属性提取
-    模式: quick, standard, deep
-    """
-    if not api_key:
-        return {
-            "sentiment": "正面" if star_rating >= 4 else "负面" if star_rating <= 2 else "中性",
-            "level1_dimension": "",
-            "level2_dimension": "",
-            "motivation": "日常使用",
-            "emotion": "满意" if star_rating >= 4 else "失望",
-            "persona": "普通用户",
-            "scenario": "日常"
-        }
+    """一次API调用完成所有属性提取"""
     
     # 检查缓存
     cached = learner.get_cached(review_text)
     if cached:
         return cached
     
+    if not api_key:
+        return fallback_result(review_text, star_rating)
+    
     # 根据模式构建Prompt
     if mode == "quick":
         prompt = f"""分析评论，输出JSON：
-评论：{review_text[:200]}
+评论：{review_text[:150]}
 星级：{star_rating}/5
 
 输出格式：{{"sentiment":"正面/负面/中性","level1_dimension":"一级维度"}}
@@ -274,7 +365,7 @@ def extract_all_attributes(review_text: str, star_rating: int, api_key: str,
         
     elif mode == "standard":
         prompt = f"""分析评论，输出JSON：
-评论：{review_text[:250]}
+评论：{review_text[:200]}
 星级：{star_rating}/5
 
 输出格式：{{"sentiment":"正面/负面/中性","level1_dimension":"一级维度","level2_dimension":"具体特性"}}
@@ -284,35 +375,26 @@ def extract_all_attributes(review_text: str, star_rating: int, api_key: str,
         
     else:  # deep
         prompt = f"""分析评论，输出JSON：
-评论：{review_text[:300]}
+评论：{review_text[:250]}
 星级：{star_rating}/5
 
-输出格式：{{"sentiment":"正面/负面/中性","level1_dimension":"一级维度","level2_dimension":"具体特性","motivation":"购买动机","emotion":"情绪","persona":"用户身份","scenario":"使用场景"}}
+输出格式：{{"sentiment":"正面/负面/中性","level1_dimension":"一级维度","level2_dimension":"具体特性","motivation":"动机","emotion":"情绪","persona":"身份","scenario":"场景"}}
 一级维度可选：{', '.join(LEVEL1_DIMENSIONS)}
-动机选项：车载使用、商务办公、防摔保护、旅行使用、送礼、日常使用、游戏使用
-情绪选项：惊喜、满意、平静、失望、焦虑、愤怒、后悔
-身份选项：商务人士、学生、旅行用户、家庭用户、科技爱好者、游戏用户、普通用户
-场景选项：车载、办公室、旅行、健身房、家庭、户外、通勤
+动机：车载使用、商务办公、防摔保护、旅行使用、送礼、日常使用、游戏使用
+情绪：惊喜、满意、平静、失望、焦虑、愤怒、后悔
+身份：商务人士、学生、旅行用户、家庭用户、科技爱好者、游戏用户、普通用户
+场景：车载、办公室、旅行、健身房、家庭、户外、通勤
 只输出JSON："""
         max_tokens = 300
     
     try:
         result = call_llm(api_key, prompt, max_tokens=max_tokens)
         if not result:
-            return {
-                "sentiment": "中性",
-                "level1_dimension": "",
-                "level2_dimension": "",
-                "motivation": "日常使用",
-                "emotion": "平静",
-                "persona": "普通用户",
-                "scenario": "日常"
-            }
+            return fallback_result(review_text, star_rating)
         
         clean = re.sub(r'```json\s*|```\s*', '', result.strip())
         data = json.loads(clean)
         
-        # 标准化字段
         result_dict = {
             "sentiment": data.get("sentiment", "中性"),
             "level1_dimension": data.get("level1_dimension", ""),
@@ -328,122 +410,147 @@ def extract_all_attributes(review_text: str, star_rating: int, api_key: str,
         return result_dict
         
     except:
-        return {
-            "sentiment": "中性",
-            "level1_dimension": "",
-            "level2_dimension": "",
-            "motivation": "日常使用",
-            "emotion": "平静",
-            "persona": "普通用户",
-            "scenario": "日常"
-        }
+        return fallback_result(review_text, star_rating)
 
 # =========================
-# 批量分析 - 20条一批
+# 批量分析 - 一次处理多条
 # =========================
 def batch_extract_all(reviews_batch: List[Tuple[int, str, int]], api_key: str, 
                       learner: DimensionLearner, mode: str = "standard") -> List[dict]:
-    """批量分析 - 20条评论一次API调用"""
+    """批量分析 - 带缓存检查和降级处理"""
     if not api_key:
+        return [fallback_result(text, rating) for idx, text, rating in reviews_batch]
+    
+    # 1. 检查缓存
+    cached_results = []
+    uncached = []
+    for idx, text, rating in reviews_batch:
+        cached = learner.get_cached(text)
+        if cached:
+            cached_results.append({"idx": idx, **cached})
+        else:
+            uncached.append((idx, text, rating))
+    
+    if not uncached:
+        return cached_results
+    
+    # 2. 如果超过10条，分批处理
+    if len(uncached) > 10:
+        all_results = cached_results
+        for i in range(0, len(uncached), 10):
+            chunk = uncached[i:i+10]
+            chunk_results = _process_batch(chunk, api_key, mode, learner)
+            all_results.extend(chunk_results)
+        return all_results
+    
+    # 3. 正常处理
+    chunk_results = _process_batch(uncached, api_key, mode, learner)
+    return cached_results + chunk_results
+
+def _process_batch(batch: List[Tuple[int, str, int]], api_key: str, mode: str, 
+                   learner: DimensionLearner) -> List[dict]:
+    """处理单个批次 - 带重试"""
+    if not batch:
         return []
     
-    # 构建批量Prompt
+    # 准备数据（截断评论）
     batch_data = []
-    for idx, text, rating in reviews_batch:
+    for idx, text, rating in batch:
         batch_data.append({
             "id": idx,
-            "text": text[:200],
+            "text": text[:120] if len(text) > 120 else text,
             "rating": rating
         })
     
     # 根据模式构建Prompt
     if mode == "quick":
-        prompt = f"""分析以下{len(reviews_batch)}条评论，为每条评论输出JSON。
+        prompt = f"""分析{len(batch)}条评论，每条输出JSON一行。
 
-评论列表：
-{json.dumps(batch_data, ensure_ascii=False, indent=2)}
+评论：
+{json.dumps(batch_data, ensure_ascii=False, indent=2)[:1500]}
 
-输出格式（每条评论一行JSON）：
-{{"id": 0, "sentiment": "正面/负面/中性", "level1_dimension": "一级维度"}}
-一级维度可选：{', '.join(LEVEL1_DIMENSIONS)}
+输出格式：{{"id":0,"sentiment":"正面/负面/中性","level1_dimension":"维度"}}
+一级维度：{', '.join(LEVEL1_DIMENSIONS)}
 
 只输出JSON，每行一条："""
-        max_tokens = len(reviews_batch) * 50
+        max_tokens = len(batch) * 50 + 200
         
     elif mode == "standard":
-        prompt = f"""分析以下{len(reviews_batch)}条评论，为每条评论输出JSON。
+        prompt = f"""分析{len(batch)}条评论，每条输出JSON一行。
 
-评论列表：
-{json.dumps(batch_data, ensure_ascii=False, indent=2)}
+评论：
+{json.dumps(batch_data, ensure_ascii=False, indent=2)[:1500]}
 
-输出格式（每条评论一行JSON）：
-{{"id": 0, "sentiment": "正面/负面/中性", "level1_dimension": "一级维度", "level2_dimension": "具体特性"}}
-一级维度可选：{', '.join(LEVEL1_DIMENSIONS)}
+输出格式：{{"id":0,"sentiment":"正面/负面/中性","level1_dimension":"维度","level2_dimension":"特性"}}
+一级维度：{', '.join(LEVEL1_DIMENSIONS)}
 
 只输出JSON，每行一条："""
-        max_tokens = len(reviews_batch) * 80
+        max_tokens = len(batch) * 80 + 300
         
     else:  # deep
-        prompt = f"""分析以下{len(reviews_batch)}条评论，为每条评论输出JSON。
+        prompt = f"""分析{len(batch)}条评论，每条输出JSON一行。
 
-评论列表：
-{json.dumps(batch_data, ensure_ascii=False, indent=2)}
+评论：
+{json.dumps(batch_data, ensure_ascii=False, indent=2)[:1200]}
 
-输出格式（每条评论一行JSON）：
-{{"id": 0, "sentiment": "正面/负面/中性", "level1_dimension": "一级维度", "level2_dimension": "具体特性", "motivation": "动机", "emotion": "情绪", "persona": "身份", "scenario": "场景"}}
-一级维度可选：{', '.join(LEVEL1_DIMENSIONS)}
+输出格式：{{"id":0,"sentiment":"正面/负面/中性","level1_dimension":"维度","level2_dimension":"特性","motivation":"动机","emotion":"情绪","persona":"身份","scenario":"场景"}}
+一级维度：{', '.join(LEVEL1_DIMENSIONS)}
 动机：车载使用、商务办公、防摔保护、旅行使用、送礼、日常使用、游戏使用
 情绪：惊喜、满意、平静、失望、焦虑、愤怒、后悔
 身份：商务人士、学生、旅行用户、家庭用户、科技爱好者、游戏用户、普通用户
 场景：车载、办公室、旅行、健身房、家庭、户外、通勤
 
 只输出JSON，每行一条："""
-        max_tokens = len(reviews_batch) * 150
+        max_tokens = len(batch) * 150 + 500
     
-    try:
-        result = call_llm(api_key, prompt, max_tokens=max_tokens + 500)
-        if not result:
-            return []
-        
-        results = []
-        for line in result.strip().split('\n'):
-            try:
-                data = json.loads(line.strip())
-                results.append(data)
-            except:
+    # 重试3次
+    for attempt in range(3):
+        try:
+            result = call_llm(api_key, prompt, max_tokens=max_tokens + 500)
+            if not result:
+                if attempt == 2:
+                    return [fallback_result(text, rating) for _, text, rating in batch]
                 continue
-        
-        # 确保所有评论都有结果
-        final_results = []
-        for item in batch_data:
-            found = next((r for r in results if r.get("id") == item["id"]), None)
-            if found:
-                final_results.append({
-                    "idx": item["id"],
-                    "sentiment": found.get("sentiment", "中性"),
-                    "level1_dimension": found.get("level1_dimension", ""),
-                    "level2_dimension": found.get("level2_dimension", ""),
-                    "motivation": found.get("motivation", "日常使用"),
-                    "emotion": found.get("emotion", "平静"),
-                    "persona": found.get("persona", "普通用户"),
-                    "scenario": found.get("scenario", "日常")
-                })
-            else:
-                # 默认值
-                final_results.append({
-                    "idx": item["id"],
-                    "sentiment": "正面" if item["rating"] >= 4 else "负面" if item["rating"] <= 2 else "中性",
-                    "level1_dimension": "",
-                    "level2_dimension": "",
-                    "motivation": "日常使用",
-                    "emotion": "满意" if item["rating"] >= 4 else "失望",
-                    "persona": "普通用户",
-                    "scenario": "日常"
-                })
-        
-        return final_results
-    except:
-        return []
+            
+            # 解析结果
+            results = []
+            for line in result.strip().split('\n'):
+                try:
+                    data = json.loads(line.strip())
+                    results.append(data)
+                except:
+                    continue
+            
+            # 确保所有评论都有结果
+            final_results = []
+            for item in batch_data:
+                found = next((r for r in results if r.get("id") == item["id"]), None)
+                if found:
+                    result_dict = {
+                        "sentiment": found.get("sentiment", "中性"),
+                        "level1_dimension": found.get("level1_dimension", ""),
+                        "level2_dimension": found.get("level2_dimension", ""),
+                        "motivation": found.get("motivation", "日常使用"),
+                        "emotion": found.get("emotion", "平静"),
+                        "persona": found.get("persona", "普通用户"),
+                        "scenario": found.get("scenario", "日常")
+                    }
+                    # 缓存
+                    learner.save_cache(item["text"], result_dict)
+                    final_results.append({"idx": item["id"], **result_dict})
+                else:
+                    # 单条降级
+                    fallback = fallback_result(item["text"], item["rating"])
+                    final_results.append({"idx": item["id"], **fallback})
+            
+            return final_results
+            
+        except:
+            if attempt == 2:
+                return [fallback_result(text, rating) for _, text, rating in batch]
+            time.sleep(1)
+    
+    return [fallback_result(text, rating) for _, text, rating in batch]
 
 # =========================
 # 报告生成器
@@ -453,7 +560,6 @@ def generate_report(positive_dims: dict, negative_dims: dict, emotion_dist: dict
                     level2_dims: dict, sample_reviews: List[str], api_key: str) -> str:
     """生成战略洞察报告 - 限制数据量避免超上下文"""
     
-    # 只取TOP数据
     top_pos = list(positive_dims.items())[:20] if positive_dims else []
     top_neg = list(negative_dims.items())[:20] if negative_dims else []
     top_emotion = list(emotion_dist.items())[:10] if emotion_dist else []
@@ -462,13 +568,11 @@ def generate_report(positive_dims: dict, negative_dims: dict, emotion_dist: dict
     top_scenario = list(scenario_dist.items())[:10] if scenario_dist else []
     top_level2 = list(level2_dims.items())[:20] if level2_dims else []
     
-    # 随机选取20条样本
     samples = random.sample(sample_reviews, min(20, len(sample_reviews)))
     
     pos_str = "\n".join([f"  - {dim}: {count}次" for dim, count in top_pos[:10]])
     neg_str = "\n".join([f"  - {dim}: {count}次" for dim, count in top_neg[:10]])
     level2_str = "\n".join([f"  - {dim}: {count}次" for dim, count in top_level2[:10]])
-    
     sample_str = "\n".join([f"- {text[:80]}..." for text in samples])
     
     prompt = f"""你是资深产品分析师。基于数据生成洞察报告（500字以内）：
@@ -491,10 +595,10 @@ def generate_report(positive_dims: dict, negative_dims: dict, emotion_dist: dict
 3. 优化建议（短中长期）
 4. 差异化策略
 
-简洁输出，不要表格："""
+简洁输出："""
     
     try:
-        report = call_llm(api_key, prompt, max_tokens=2000)
+        report = call_llm(api_key, prompt, max_tokens=1500)
         if report and len(report) > 100:
             return report
     except:
@@ -510,7 +614,7 @@ def generate_fallback_report(top_pos, top_neg, emotion_dist, persona_dist, motiv
 ### 核心发现
 - 用户最满意：{top_pos[0][0] if top_pos else '待分析'} ({top_pos[0][1] if top_pos else 0}次)
 - 主要痛点：{top_neg[0][0] if top_neg else '待分析'} ({top_neg[0][1] if top_neg else 0}次)
-- 正向情绪占比：{emotion_dist.get('满意', 0) + emotion_dist.get('惊喜', 0):.1f}%
+- 正向情绪：{emotion_dist.get('满意', 0) + emotion_dist.get('惊喜', 0):.1f}%
 
 ### 核心用户群
 - {list(persona_dist.items())[0][0] if persona_dist else '普通用户'}: {list(persona_dist.items())[0][1] if persona_dist else 0:.1f}%
@@ -585,6 +689,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def get_sample_data():
+    """生成包含多维度评论的示例数据"""
     return pd.DataFrame({
         "review_text": [
             "磁力很强，开车用很稳，商务出差必备，强烈推荐",
@@ -598,9 +703,12 @@ def get_sample_data():
             "支架牢固度很好，手机放上去很稳，不会掉",
             "支撑力不错，大屏幕手机也能撑住，不会后仰",
             "开合很顺滑，单手操作也没问题",
-            "磁吸力太弱，稍微碰一下就掉了"
+            "磁吸力太弱，稍微碰一下就掉了",
+            "支架松动，放上去就往下滑，做工太差了",
+            "转轴异响，开合有咔咔声，质量堪忧",
+            "横屏时角度不对，看着很累，设计缺陷"
         ],
-        "star_rating": [5, 2, 5, 1, 4, 4, 5, 5, 5, 4, 4, 2]
+        "star_rating": [5, 2, 5, 1, 4, 4, 5, 5, 5, 4, 4, 2, 2, 2, 3]
     })
 
 def discover_opportunities(positive_dims: dict, negative_dims: dict, total: int) -> List[dict]:
@@ -652,10 +760,7 @@ def export_all_data(df: pd.DataFrame, analysis_data: dict) -> bytes:
 # =========================
 def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner, 
                    mode: str = "standard", progress_callback=None):
-    """
-    V2分析引擎 - 支持批量分析、断点续传、并发处理
-    模式: quick, standard, deep
-    """
+    """V2分析引擎 - 支持批量分析、断点续传、自动降级"""
     df = df.copy()
     total = len(df)
     
@@ -698,10 +803,12 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
     progress_bar = st.progress(start_idx / total if total > 0 else 0)
     status_text = st.empty()
     time_text = st.empty()
+    stats_text = st.empty()
     
     start_time = time.time()
-    batch_size = 20  # 每批20条
+    batch_size = 10  # 每批10条（更稳定）
     failed_count = 0
+    success_count = start_idx
     total_batches = (total - start_idx + batch_size - 1) // batch_size
     
     for batch_num in range(total_batches):
@@ -719,11 +826,13 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
         
         elapsed = time.time() - start_time
         total_processed = batch_end - start_idx
-        if total_processed > 0:
-            remaining = (elapsed / total_processed) * (total - batch_end)
+        if total_processed > 0 and batch_num > 0:
+            speed = total_processed / elapsed
+            remaining = (total - batch_end) / speed if speed > 0 else 0
             time_text.text(f"⏱ 预计剩余: {int(remaining//60)}分{int(remaining%60)}秒")
         
-        status_text.text(f"📊 分析批次 {batch_num + 1}/{total_batches} | 评论 {batch_start + 1}-{batch_end}/{total}")
+        status_text.text(f"📊 批次 {batch_num + 1}/{total_batches} | 评论 {batch_start + 1}-{batch_end}/{total}")
+        stats_text.text(f"✅ 成功: {success_count} | ❌ 失败: {failed_count}")
         
         if progress_callback:
             progress_callback(batch_end, total)
@@ -743,6 +852,7 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
                     df.at[idx, "persona"] = result["persona"]
                     df.at[idx, "scenario"] = result["scenario"]
                     df.at[idx, "analysis_status"] = "已分析"
+                    success_count += 1
                     
                     # 统计
                     sentiment = result["sentiment"]
@@ -761,7 +871,7 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
                     personas.append(result["persona"])
                     scenarios.append(result["scenario"])
             else:
-                # 批次失败，逐条处理
+                # 批次完全失败，逐条处理
                 for idx, text, rating in batch_reviews:
                     try:
                         result = extract_all_attributes(text, rating, api_key, learner, mode)
@@ -773,6 +883,7 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
                         df.at[idx, "persona"] = result["persona"]
                         df.at[idx, "scenario"] = result["scenario"]
                         df.at[idx, "analysis_status"] = "已分析"
+                        success_count += 1
                         
                         sentiment = result["sentiment"]
                         level1 = result["level1_dimension"]
@@ -791,48 +902,52 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
                         scenarios.append(result["scenario"])
                     except:
                         failed_count += 1
-                        df.at[idx, "sentiment"] = "中性"
-                        df.at[idx, "level1_dimension"] = ""
-                        df.at[idx, "level2_dimension"] = ""
-                        df.at[idx, "motivation"] = "日常使用"
-                        df.at[idx, "emotion"] = "平静"
-                        df.at[idx, "persona"] = "普通用户"
-                        df.at[idx, "scenario"] = "日常"
-                        df.at[idx, "analysis_status"] = "失败"
+                        fallback = fallback_result(text, rating)
+                        df.at[idx, "sentiment"] = fallback["sentiment"]
+                        df.at[idx, "level1_dimension"] = fallback["level1_dimension"]
+                        df.at[idx, "level2_dimension"] = fallback["level2_dimension"]
+                        df.at[idx, "motivation"] = fallback["motivation"]
+                        df.at[idx, "emotion"] = fallback["emotion"]
+                        df.at[idx, "persona"] = fallback["persona"]
+                        df.at[idx, "scenario"] = fallback["scenario"]
+                        df.at[idx, "analysis_status"] = "降级"
                         
-                        motivations.append("日常使用")
-                        emotions.append("平静")
-                        personas.append("普通用户")
-                        scenarios.append("日常")
+                        motivations.append(fallback["motivation"])
+                        emotions.append(fallback["emotion"])
+                        personas.append(fallback["persona"])
+                        scenarios.append(fallback["scenario"])
             
             # 每批保存进度
             learner.save_progress(batch_end, total)
             
         except Exception as e:
-            failed_count += len(batch_reviews)
-            for idx, _, _ in batch_reviews:
-                df.at[idx, "sentiment"] = "中性"
-                df.at[idx, "level1_dimension"] = ""
-                df.at[idx, "level2_dimension"] = ""
-                df.at[idx, "motivation"] = "日常使用"
-                df.at[idx, "emotion"] = "平静"
-                df.at[idx, "persona"] = "普通用户"
-                df.at[idx, "scenario"] = "日常"
-                df.at[idx, "analysis_status"] = "失败"
+            # 批次异常，逐条降级
+            for idx, text, rating in batch_reviews:
+                failed_count += 1
+                fallback = fallback_result(text, rating)
+                df.at[idx, "sentiment"] = fallback["sentiment"]
+                df.at[idx, "level1_dimension"] = fallback["level1_dimension"]
+                df.at[idx, "level2_dimension"] = fallback["level2_dimension"]
+                df.at[idx, "motivation"] = fallback["motivation"]
+                df.at[idx, "emotion"] = fallback["emotion"]
+                df.at[idx, "persona"] = fallback["persona"]
+                df.at[idx, "scenario"] = fallback["scenario"]
+                df.at[idx, "analysis_status"] = "降级"
                 
-                motivations.append("日常使用")
-                emotions.append("平静")
-                personas.append("普通用户")
-                scenarios.append("日常")
+                motivations.append(fallback["motivation"])
+                emotions.append(fallback["emotion"])
+                personas.append(fallback["persona"])
+                scenarios.append(fallback["scenario"])
     
     progress_bar.empty()
     status_text.empty()
     time_text.empty()
+    stats_text.empty()
     
     learner.clear_progress()
     
     if failed_count > 0:
-        st.warning(f"⚠️ {failed_count} 条评论分析失败，已使用默认值")
+        st.warning(f"⚠️ {failed_count} 条评论使用降级模式（关键词匹配），{success_count} 条使用AI分析")
     
     # ===== 维度学习 =====
     with st.spinner("🧠 正在学习新维度..."):
@@ -866,7 +981,12 @@ def run_analysis_v2(df: pd.DataFrame, api_key: str, learner: DimensionLearner,
         "scenario_dist": scenario_dist,
         "opportunities": opportunities,
         "strategic_insights": strategic_insights,
-        "learned_dimensions": learner.learned_dimensions
+        "learned_dimensions": learner.learned_dimensions,
+        "stats": {
+            "ai_analyzed": success_count,
+            "fallback_used": failed_count,
+            "total": total_count
+        }
     }
     
     return df, analysis_data
@@ -885,7 +1005,7 @@ def render_sidebar():
         mode = st.selectbox(
             "选择模式",
             ["快速模式", "标准模式", "深度模式"],
-            help="快速：仅分析情感+一级维度 | 标准：+二级维度 | 深度：+画像+场景+动机+情绪"
+            help="快速：情感+一级维度 | 标准：+二级维度 | 深度：+画像+场景+动机+情绪"
         )
         mode_map = {"快速模式": "quick", "标准模式": "standard", "深度模式": "deep"}
         mode_key = mode_map[mode]
@@ -898,8 +1018,7 @@ def render_sidebar():
             if st.button("🔄 清除缓存", use_container_width=True):
                 learner = DimensionLearner()
                 learner.clear_progress()
-                if os.path.exists(learner.db_file):
-                    os.remove(learner.db_file)
+                learner.clear_cache()
                 st.success("已清除")
         
         start_analysis = st.button("🚀 开始分析", use_container_width=True, type="primary")
@@ -922,7 +1041,7 @@ def render_sidebar():
 # =========================
 def main():
     st.title("🧠 VOC 智能洞察平台 V2")
-    st.caption("架构级重构 | 支持3000条评论 | API成本降低80% | 速度提升10倍")
+    st.caption("完整修复版 | 支持3000条评论 | 批量分析 | 自动降级 | 维度学习")
     
     api_key, input_df, mode, start_analysis = render_sidebar()
     
@@ -931,25 +1050,26 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("""
-            ### 🚀 V2 核心升级
+            ### 🚀 V2 核心特性
             
-            - **⚡ 速度提升10倍**：批量分析20条/次
-            - **💰 API成本降低80%**：1条评论只需1次调用
-            - **🧠 自主学习维度**：自动发现和聚类二级维度
+            - **⚡ 速度提升10倍**：批量分析10条/次
+            - **💰 API成本降低80%**：1条评论1次调用
+            - **🧠 自主学习维度**：自动发现和聚类
             - **💾 本地缓存**：重复评论直接读取
             - **📌 断点续传**：关闭页面可继续
+            - **🛡️ 自动降级**：API失败用关键词匹配
             """)
         with col2:
             st.markdown("""
             ### 📊 性能目标
             
-            | 评论数 | 耗时 |
-            |--------|------|
-            | 100条 | 30秒 |
-            | 300条 | 1分钟 |
-            | 500条 | 2分钟 |
-            | 1000条 | 5分钟 |
-            | 3000条 | 15分钟 |
+            | 评论数 | 耗时 | API调用 |
+            |--------|------|---------|
+            | 100条 | 30秒 | 10次 |
+            | 300条 | 1分钟 | 30次 |
+            | 500条 | 2分钟 | 50次 |
+            | 1000条 | 5分钟 | 100次 |
+            | 3000条 | 15分钟 | 300次 |
             """)
         return
     
@@ -970,7 +1090,10 @@ def main():
             
             st.session_state["df"] = df
             st.session_state["analysis_data"] = analysis_data
-            st.success(f"✅ 分析完成！{len(df)} 条，用时 {elapsed:.1f} 秒 (平均 {(elapsed/len(df)):.2f}秒/条)")
+            
+            stats = analysis_data.get("stats", {})
+            st.success(f"✅ 分析完成！{len(df)} 条，用时 {elapsed:.1f} 秒")
+            st.info(f"📊 AI分析: {stats.get('ai_analyzed', 0)} 条 | 降级处理: {stats.get('fallback_used', 0)} 条")
             st.balloons()
     
     df = st.session_state.get("df", df)
@@ -980,13 +1103,15 @@ def main():
         return
     
     # ===== 数据概览 =====
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    stats = analysis_data.get("stats", {})
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     col1.metric("总评论", analysis_data.get("total", 0))
     col2.metric("一级维度", len(analysis_data.get("positive_dims", {})) + len(analysis_data.get("negative_dims", {})))
     col3.metric("二级维度", len(analysis_data.get("level2_dims", {})))
-    col4.metric("用户画像", len(analysis_data.get("persona_dist", {})))
-    col5.metric("学习聚类", len(analysis_data.get("learned_dimensions", {})))
-    col6.metric("机会点", len(analysis_data.get("opportunities", [])))
+    col4.metric("学习聚类", len(analysis_data.get("learned_dimensions", {})))
+    col5.metric("机会点", len(analysis_data.get("opportunities", [])))
+    col6.metric("AI分析", stats.get("ai_analyzed", 0))
+    col7.metric("降级处理", stats.get("fallback_used", 0))
     
     # ===== 原始数据 =====
     with st.expander("📋 数据预览", expanded=False):
@@ -1039,11 +1164,14 @@ def main():
     
     with tabs[7]:
         opportunities = analysis_data.get("opportunities", [])
-        for opp in opportunities[:5]:
-            with st.expander(f"🎯 {opp['dimension']}"):
-                st.write(f"提及: {opp['mentions']} | 差评率: {opp['complaint_rate']}%")
-                if opp['complaint_rate'] > 50:
-                    st.warning("⚠️ 紧急改进")
+        if opportunities:
+            for opp in opportunities[:5]:
+                with st.expander(f"🎯 {opp['dimension']}"):
+                    st.write(f"提及: {opp['mentions']} | 差评率: {opp['complaint_rate']}%")
+                    if opp['complaint_rate'] > 50:
+                        st.warning("⚠️ 紧急改进")
+        else:
+            st.info("暂无机会点数据")
     
     with tabs[8]:
         excel_data = export_all_data(df, analysis_data)
