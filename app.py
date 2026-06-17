@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VOC 智能分析平台 - 完整最终版（战略报告深度增强）
+VOC 智能分析平台 - 完整最终版（战略报告深度优化）
 包含：数据概览、战略洞察、维度分析、购买动机、情绪分析、用户画像、使用场景、机会发现、一键导出
 """
 
@@ -186,7 +186,7 @@ def record_new_dimensions(dimensions: List[str]):
         st.session_state.new_dimensions.update(new_dims)
 
 # =========================
-# 战略洞察报告生成（深度增强版）
+# 战略洞察报告生成（精炼深度版）
 # =========================
 def generate_strategic_insights(
     positive_dims: dict, 
@@ -199,6 +199,7 @@ def generate_strategic_insights(
 ) -> str:
     pos_total = sum(positive_dims.values()) if positive_dims else 1
     neg_total = sum(negative_dims.values()) if negative_dims else 1
+    total_mentions = pos_total + neg_total
     
     top_pos = list(positive_dims.items())[:5] if positive_dims else []
     top_neg = list(negative_dims.items())[:5] if negative_dims else []
@@ -206,20 +207,12 @@ def generate_strategic_insights(
     top_persona = list(persona_dist.items())[:3] if persona_dist else []
     top_motivation = list(motivation_dist.items())[:3] if motivation_dist else []
     
-    pos_str = "\n".join([f"  - {dim}: {count}次 ({count/pos_total*100:.1f}%)" for dim, count in top_pos])
-    neg_str = "\n".join([f"  - {dim}: {count}次 ({count/neg_total*100:.1f}%)" for dim, count in top_neg])
-    emotion_str = "\n".join([f"  - {emotion}: {pct:.1f}%" for emotion, pct in top_emotion])
-    persona_str = "\n".join([f"  - {p}: {pct:.1f}%" for p, pct in top_persona])
-    motivation_str = "\n".join([f"  - {m}: {pct:.1f}%" for m, pct in top_motivation])
+    # 计算关键指标
+    pos_rate = pos_total / total_mentions * 100 if total_mentions > 0 else 0
+    neg_rate = neg_total / total_mentions * 100 if total_mentions > 0 else 0
+    nps_like = pos_rate - neg_rate  # 类似净推荐值
     
-    sample_str = "\n".join([f"- {text[:120]}..." for text in sample_reviews[:10]])
-    
-    # 计算一些统计指标用于丰富分析
-    pos_ratio = pos_total / (pos_total + neg_total) if (pos_total + neg_total) > 0 else 0.5
-    neg_ratio = 1 - pos_ratio
-    nps_like = (pos_ratio - neg_ratio) * 100  # 类似净推荐值
-    
-    # 找出同时出现在好评和差评中的维度（矛盾点）
+    # 找出矛盾维度（同时出现在好评和差评中的）
     common_dims = set(positive_dims.keys()) & set(negative_dims.keys())
     conflict_dims = []
     for dim in common_dims:
@@ -228,23 +221,31 @@ def generate_strategic_insights(
         total_cnt = pos_cnt + neg_cnt
         if total_cnt > 0:
             conflict_dims.append((dim, pos_cnt, neg_cnt, pos_cnt/total_cnt*100))
-    conflict_dims.sort(key=lambda x: x[3], reverse=True)  # 按好评占比排序
+    conflict_dims.sort(key=lambda x: x[3])  # 按好评占比从低到高，即最矛盾的排前面
     
     conflict_str = ""
     if conflict_dims:
         conflict_str = "\n".join([f"  - {dim}: 好评{pos}次，差评{neg}次，好评占比{pos_ratio:.1f}%" for dim, pos, neg, pos_ratio in conflict_dims[:5]])
     
-    prompt = f"""你是资深产品战略分析师，擅长从用户评论中挖掘深度洞察。请基于以下数据，生成一份详实、专业的战略洞察报告，报告应包含具体数据支撑、趋势判断、用户需求分析、竞品对比和可执行建议。报告要求：
-- 总字数不少于2000字（中文）
-- 每个章节都要有具体分析和实例，引用数据时使用百分比和绝对值
-- 使用表格或列表清晰展示数据
-- 提供至少5条具体的短期和中期改进建议
-- 分析用户矛盾心理（即同一维度既有好评又有差评的原因）
+    # 格式化数据给LLM
+    pos_str = "\n".join([f"  - {dim}: {count}次 ({count/pos_total*100:.1f}%)" for dim, count in top_pos])
+    neg_str = "\n".join([f"  - {dim}: {count}次 ({count/neg_total*100:.1f}%)" for dim, count in top_neg])
+    emotion_str = "\n".join([f"  - {emotion}: {pct:.1f}%" for emotion, pct in top_emotion])
+    persona_str = "\n".join([f"  - {p}: {pct:.1f}%" for p, pct in top_persona])
+    motivation_str = "\n".join([f"  - {m}: {pct:.1f}%" for m, pct in top_motivation])
+    sample_str = "\n".join([f"- {text[:120]}..." for text in sample_reviews[:10]])
+    
+    # 构建精炼的Prompt，强调数据驱动、矛盾挖掘和可执行结论
+    prompt = f"""你是资深产品战略分析师。基于以下真实用户反馈数据，生成一份**精炼、有深度、数据驱动**的战略洞察报告（约1500字）。必须包含：
+1. 一个核心矛盾点（用户既爱又恨的地方）。
+2. 三个最关键的发现（每个用数据支撑）。
+3. 针对痛点的具体改进建议（分短期和长期）。
+4. 结论要可执行，不空泛。
 
 数据概览：
-- 总评论数：{sum(positive_dims.values()) + sum(negative_dims.values())} 条涉及维度提及
-- 正面提及总数：{pos_total}，负面提及总数：{neg_total}
-- 净推荐倾向（类似NPS）：{nps_like:.1f}（正值表示正面主导）
+- 总提及次数（正面+负面）：{total_mentions}
+- 正面占比：{pos_rate:.1f}%，负面占比：{neg_rate:.1f}%
+- 净推荐倾向（NPS-like）：{nps_like:.1f}（正值为偏向正向）
 
 ## 用户好评维度 TOP5
 {pos_str}
@@ -252,8 +253,8 @@ def generate_strategic_insights(
 ## 用户差评维度 TOP5
 {neg_str}
 
-## 同时出现好评和差评的矛盾维度（TOP5）
-{conflict_str if conflict_str else '无矛盾维度'}
+## 矛盾维度（同时有正面和负面评价，按矛盾程度排序）
+{conflict_str if conflict_str else '无突出矛盾维度'}
 
 ## 用户情绪分布 TOP3
 {emotion_str}
@@ -264,77 +265,60 @@ def generate_strategic_insights(
 ## 购买动机分布 TOP3
 {motivation_str}
 
-## 代表性用户评论
+## 代表性评论
 {sample_str}
 
-请按以下结构生成详细报告（每个部分都要充分展开，引用具体数据）：
+请按以下结构输出（**不要超过2000字**，每个部分要有具体数据引用）：
 
-# 📊 用户评论深度洞察报告
+# 📊 战略洞察报告
+**报告日期**：{datetime.now().strftime("%Y-%m-%d")}
 
-## 一、核心发现摘要
-（提炼3-5个最关键的洞察，每条用1-2句话，突出数据）
+## 一、核心矛盾
+（描述用户最主要的矛盾心理，基于数据）
 
-## 二、用户核心关注点分析
-### 2.1 最受关注的维度（基于提及率，列出TOP5并分析）
-### 2.2 关注度趋势判断（基于好评/差评比例变化，推测用户关注点迁移）
-### 2.3 与行业基准对比（根据数据推测可能存在的行业差距，给出合理推断）
+## 二、三大关键发现
+### 发现1：...
+（数据+分析）
+### 发现2：...
+### 发现3：...
 
-## 三、好评深度分析
-### 3.1 核心好评维度及占比（列表展示）
-### 3.2 用户满意的具体场景（从评论中提取典型场景）
-### 3.3 好评背后的用户需求（分析驱动好评的深层次需求）
+## 三、优势与机会
+（基于好评维度和动机，提炼可乘之机）
 
-## 四、痛点深度分析
-### 4.1 核心痛点维度及占比（列表展示）
-### 4.2 痛点的具体表现和场景（结合评论描述）
-### 4.3 痛点背后的根本原因（分析为什么会造成这种痛点）
-### 4.4 用户矛盾心理分析（例如既要A又要B的冲突，引用矛盾维度数据）
+## 四、风险与痛点
+（基于差评维度和情绪，指出潜在风险）
 
-## 五、用户画像与行为洞察
-### 5.1 核心用户群特征（基于画像分布描述）
-### 5.2 不同画像的诉求差异（对比不同用户群关注点）
-### 5.3 购买决策驱动因素（总结主要购买诱因）
+## 五、行动建议
+### 短期（1-2周）
+（具体可执行项）
+### 长期（1-3个月）
+（策略方向）
 
-## 六、情绪洞察
-### 6.1 情绪分布概况（展示比例）
-### 6.2 触发正向情绪的关键因素（总结）
-### 6.3 触发负向情绪的关键因素（总结）
-
-## 七、产品优化建议
-### 7.1 短期改进（1-2周可执行，具体行动项）
-### 7.2 中期改进（1-2个月，策略性建议）
-### 7.3 长期战略方向（3-6个月规划）
-
-## 八、差异化竞争策略
-### 8.1 当前市场机会点（基于数据发现空白）
-### 8.2 建议打造的独特卖点（结合优势）
-### 8.3 竞品对比建议（推测竞品可能弱点）
-
-## 九、行动优先级
-（按紧急重要程度列出TOP5行动项，每项附上预期影响）
-
-请确保报告内容充实、逻辑清晰、数据驱动，语言专业但不晦涩。"""
+**注意**：报告必须基于提供的数据，禁止虚构，语言专业但易懂。"""
     
     try:
-        report = call_llm(api_key, prompt, max_tokens=4000)  # 增大到4000
+        report = call_llm(api_key, prompt, max_tokens=2500)  # 2500 tokens 足以生成1500字
         if report and not report.startswith("API错误") and not report.startswith("请求失败"):
-            # 如果报告太短（少于1000字），追加一些自动统计内容
-            if len(report) < 1000:
-                report += "\n\n---\n*（报告篇幅较短，以下补充基础统计信息）*\n\n"
-                report += f"**正面维度分布**：\n" + "\n".join([f"- {dim}: {cnt}次" for dim, cnt in list(positive_dims.items())[:5]])
-                report += f"\n\n**负面维度分布**：\n" + "\n".join([f"- {dim}: {cnt}次" for dim, cnt in list(negative_dims.items())[:5]])
+            # 检查是否包含日期，若无则补上
+            if "报告日期" not in report:
+                report = f"# 📊 战略洞察报告\n**报告日期**：{datetime.now().strftime('%Y-%m-%d')}\n\n" + report
             return report
     except:
         pass
     
+    # Fallback 报告（基于统计生成，不依赖LLM）
     return generate_fallback_report(positive_dims, negative_dims, emotion_dist, persona_dist, motivation_dist)
 
 # =========================
-# Fallback 报告（增强版）
+# Fallback 报告（增强统计版）
 # =========================
 def generate_fallback_report(positive_dims, negative_dims, emotion_dist, persona_dist, motivation_dist):
     pos_total = sum(positive_dims.values()) if positive_dims else 1
     neg_total = sum(negative_dims.values()) if negative_dims else 1
+    total_mentions = pos_total + neg_total
+    pos_rate = pos_total / total_mentions * 100 if total_mentions > 0 else 0
+    neg_rate = neg_total / total_mentions * 100 if total_mentions > 0 else 0
+    
     top_pos = list(positive_dims.items())[:5] if positive_dims else []
     top_neg = list(negative_dims.items())[:5] if negative_dims else []
     top_emotion = list(emotion_dist.items())[:3] if emotion_dist else []
@@ -342,88 +326,44 @@ def generate_fallback_report(positive_dims, negative_dims, emotion_dist, persona
     top_motivation = list(motivation_dist.items())[:3] if motivation_dist else []
     
     report = f"""
-# 📊 用户评论深度洞察报告（基于统计）
+# 📊 战略洞察报告（数据驱动版）
+**报告日期**：{datetime.now().strftime("%Y-%m-%d")}
 
-## 一、核心发现摘要
-- **总体倾向**：正面提及占比 {pos_total/(pos_total+neg_total)*100:.1f}%，负面 {neg_total/(pos_total+neg_total)*100:.1f}%，整体评价偏向{'正面' if pos_total > neg_total else '负面'}。
-- **最强优势**：{top_pos[0][0] if top_pos else '暂无'}（{top_pos[0][1]/pos_total*100:.1f}%好评提及）
-- **最大痛点**：{top_neg[0][0] if top_neg else '暂无'}（{top_neg[0][1]/neg_total*100:.1f}%差评提及）
-- **核心用户**：{top_persona[0][0] if top_persona else '未知'}，占比 {top_persona[0][1] if top_persona else 0:.1f}%
-- **主要购买动机**：{top_motivation[0][0] if top_motivation else '日常使用'}（{top_motivation[0][1] if top_motivation else 0:.1f}%）
+## 一、核心矛盾
+用户对产品最突出的矛盾在于：**{top_pos[0][0] if top_pos else '体验'}** 和 **{top_neg[0][0] if top_neg else '体验'}** 的冲突。  
+正面提及中 {top_pos[0][1]/pos_total*100 if top_pos else 0:.1f}% 集中在“{top_pos[0][0] if top_pos else ''}”，而负面提及中 {top_neg[0][1]/neg_total*100 if top_neg else 0:.1f}% 集中在“{top_neg[0][0] if top_neg else ''}”，说明产品在满足部分需求的同时，严重忽视了另一部分。
 
-## 二、用户核心关注点分析
-用户最关心的维度按提及次数排序：
-| 排名 | 维度 | 总提及 | 好评 | 差评 | 好评率 |
-|------|------|--------|------|------|--------|
-"""
-    all_dims = set(positive_dims.keys()) | set(negative_dims.keys())
-    dim_stats = []
-    for dim in all_dims:
-        pos_cnt = positive_dims.get(dim, 0)
-        neg_cnt = negative_dims.get(dim, 0)
-        total_cnt = pos_cnt + neg_cnt
-        pos_rate = pos_cnt / total_cnt * 100 if total_cnt > 0 else 0
-        dim_stats.append((dim, total_cnt, pos_cnt, neg_cnt, pos_rate))
-    dim_stats.sort(key=lambda x: x[1], reverse=True)
-    for i, (dim, total, pos, neg, rate) in enumerate(dim_stats[:10], 1):
-        report += f"| {i} | {dim} | {total} | {pos} | {neg} | {rate:.1f}% |\n"
-    
-    report += f"""
-## 三、好评深度分析
-### 3.1 核心好评维度及占比
-| 维度 | 提及次数 | 占好评比例 |
-|------|---------|-----------|
-"""
-    for dim, cnt in top_pos[:5]:
-        report += f"| {dim} | {cnt} | {cnt/pos_total*100:.1f}% |\n"
-    
-    report += f"""
-### 3.2 用户满意的具体场景
-根据评论内容，用户主要在以下场景感到满意：
-- {', '.join([f"**{dim}**" for dim, _ in top_pos[:3]])}等。
-（如需更具体场景，请使用LLM生成）
+## 二、三大关键发现
+### 发现1：优势明确，但未形成壁垒
+- **{top_pos[0][0] if top_pos else '优势'}** 是最受好评的维度（{top_pos[0][1]/pos_total*100 if top_pos else 0:.1f}%），说明用户认可该方向。
+- 然而，次优势 {top_pos[1][0] if len(top_pos)>1 else '无'} 占比仅 {top_pos[1][1]/pos_total*100 if len(top_pos)>1 else 0:.1f}%，缺乏多元化支撑。
 
-## 四、痛点深度分析
-### 4.1 核心痛点维度及占比
-| 维度 | 提及次数 | 占差评比例 |
-|------|---------|-----------|
-"""
-    for dim, cnt in top_neg[:5]:
-        report += f"| {dim} | {cnt} | {cnt/neg_total*100:.1f}% |\n"
-    
-    report += f"""
-### 4.2 痛点的具体表现
-用户对 **{top_neg[0][0] if top_neg else '暂无'}** 的不满是主要的改进方向。
+### 发现2：痛点集中，且影响严重
+- **{top_neg[0][0] if top_neg else '痛点'}** 是最大的负面来源（占负面提及的 {top_neg[0][1]/neg_total*100 if top_neg else 0:.1f}%）。
+- 负面情绪中，**{top_emotion[0][0] if top_emotion else '失望'}** 占比 {top_emotion[0][1] if top_emotion else 0:.1f}%，需优先化解。
 
-## 五、用户画像与行为洞察
-| 画像 | 占比 |
-|------|------|
-"""
-    for persona, pct in list(persona_dist.items())[:5]:
-        report += f"| {persona} | {pct:.1f}% |\n"
-    
-    report += f"""
-## 六、情绪洞察
-- **正向情绪**（惊喜+满意）：{emotion_dist.get('惊喜', 0) + emotion_dist.get('满意', 0):.1f}%
-- **负向情绪**（失望+愤怒+后悔+焦虑）：{emotion_dist.get('失望', 0) + emotion_dist.get('愤怒', 0) + emotion_dist.get('后悔', 0) + emotion_dist.get('焦虑', 0):.1f}%
-- **中性情绪**（平静）：{emotion_dist.get('平静', 0):.1f}%
+### 发现3：用户画像单一，但需求多元
+- 核心用户群是 **{top_persona[0][0] if top_persona else '普通用户'}**（{top_persona[0][1] if top_persona else 0:.1f}%），但购买动机包括 **{top_motivation[0][0] if top_motivation else '日常使用'}** 和 **{top_motivation[1][0] if len(top_motivation)>1 else '其他'}**，表明同一用户群有多层次需求。
 
-## 七、产品优化建议
-1. **短期**：优先解决 **{top_neg[0][0] if top_neg else '主要痛点'}** 问题，预计可提升整体满意度。
-2. **中期**：在 **{top_pos[0][0] if top_pos else '优势'}** 基础上做差异化创新。
-3. **长期**：围绕 **{top_persona[0][0] if top_persona else '核心用户'}** 打造生态体验。
+## 三、优势与机会
+- **机会点**：在 **{top_pos[0][0] if top_pos else '优势'}** 领域深化创新，打造差异化卖点。
+- **可乘之机**：竞品可能同样存在 **{top_neg[0][0] if top_neg else '痛点'}** 问题，率先解决即可领先。
 
-## 八、差异化竞争策略
-- **机会点**：在 **{top_pos[0][0] if top_pos else '优势'}** 领域建立壁垒。
-- **竞品对比**：当前竞品可能在 **{top_neg[0][0] if top_neg else '痛点'}** 方面同样薄弱，可抢先优化。
+## 四、风险与痛点
+- **即时风险**：**{top_neg[0][0] if top_neg else '痛点'}** 的高差评率可能导致用户流失和口碑恶化。
+- **潜在风险**：如果 **{top_neg[0][0] if top_neg else '痛点'}** 与 **{top_pos[0][0] if top_pos else '优势'}** 的冲突持续，用户忠诚度将下降。
 
-## 九、行动优先级
-1. 立即改进 {top_neg[0][0] if top_neg else '痛点'}（预期影响高）
-2. 强化 {top_pos[0][0] if top_pos else '优势'} 宣传（预期影响中）
-3. 针对 {top_persona[0][0] if top_persona else '核心用户'} 推出专属活动
+## 五、行动建议
+### 短期（1-2周）
+1. 立即排查 **{top_neg[0][0] if top_neg else '痛点'}** 的具体原因（如工艺、材料），制定快速修复方案。
+2. 在营销中突出 **{top_pos[0][0] if top_pos else '优势'}**，同时坦诚沟通改进计划，缓解用户焦虑。
+
+### 长期（1-3个月）
+1. 围绕 **{top_pos[0][0] if top_pos else '优势'}** 建立品牌护城河，同时系统性解决 **{top_neg[0][0] if top_neg else '痛点'}** 问题。
+2. 针对核心用户群 **{top_persona[0][0] if top_persona else '普通用户'}** 开发细分产品线，满足多元需求。
 
 ---
-*报告生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}*
+*本报告基于 {total_mentions} 条维度提及生成，正面占比 {pos_rate:.1f}%，负面占比 {neg_rate:.1f}%。*
 """
     return report
 
