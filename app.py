@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VOC 智能分析平台 - 完整版（修复 + 维度自主学习）
+VOC 智能分析平台 - 完整最终版
 包含：数据概览、战略洞察、维度分析、购买动机、情绪分析、用户画像、使用场景、机会发现、一键导出
 """
 
@@ -717,7 +717,7 @@ def render_sidebar():
         return api_key, None, start_analysis
 
 # =========================
-# 维度管理UI（修复合并bug + 智能合并增强）
+# 维度管理UI（修复合并bug + 智能合并增强 + max_tokens增大）
 # =========================
 def render_dimension_management():
     st.markdown("### 🧠 维度自主学习与管理")
@@ -751,7 +751,8 @@ def render_dimension_management():
 请将新维度智能归类到现有维度中，如果无法归类则建议创建新维度。
 输出JSON格式：{{"merge": {{"新维度1": "现有维度A", "新维度2": "现有维度B"}}, "create": ["新维度X", "新维度Y"]}}
 只输出JSON。"""
-                        result = call_llm(api_key, prompt, max_tokens=500)
+                        # 增大 max_tokens 防止截断
+                        result = call_llm(api_key, prompt, max_tokens=1500)
                         if result.startswith("API错误") or result.startswith("请求失败"):
                             st.error(f"智能合并 API 调用失败：{result}")
                         else:
@@ -784,7 +785,7 @@ def render_dimension_management():
                                 st.success("✅ 智能合并完成！")
                                 st.rerun()
                             except json.JSONDecodeError as e:
-                                st.error(f"❌ AI 返回格式错误，无法解析：{e}\n原始返回：{result[:200]}...")
+                                st.error(f"❌ AI 返回格式错误，无法解析：{e}\n可能原因：输出被截断，请尝试减少新维度数量或手动合并。\n原始返回（前200字符）：{result[:200]}...")
                             except Exception as e:
                                 st.error(f"❌ 智能合并处理异常：{e}")
             if st.button("❌ 清空所有新维度记录"):
@@ -983,7 +984,7 @@ def main():
         with col2:
             st.plotly_chart(make_bar_chart(analysis_data.get("negative_dims", {}), "差评 TOP 维度", "#e74c3c"), use_container_width=True)
 
-        # 维度管理（新增修复）
+        # 维度管理
         with st.expander("🧠 维度自主学习与管理", expanded=False):
             render_dimension_management()
 
